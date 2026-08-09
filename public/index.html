@@ -20,6 +20,9 @@
 <script src="/addon-unicode11.js"></script>
 <script src="/addon-webgl.js"></script>
 <script src="/addon-canvas.js"></script>
+<script src="/addon-image.js"></script>
+<script src="/addon-search.js"></script>
+<script src="/addon-unicode-graphemes.js"></script>
 <script>
 'use strict';
 // Rendering config mirrors ttyd's client exactly (app.tsx): WebGL renderer
@@ -40,6 +43,22 @@ term.loadAddon(fit);
 term.loadAddon(new (window.ClipboardAddon.ClipboardAddon)());
 term.loadAddon(new (window.WebLinksAddon.WebLinksAddon)());
 term.loadAddon(new (window.Unicode11Addon.Unicode11Addon)());
+term.loadAddon(new (window.UnicodeGraphemeAddon.UnicodeGraphemeAddon)());
+term.loadAddon(new (window.ImageAddon.ImageAddon)()); // sixel images
+const search = new (window.SearchAddon.SearchAddon)();
+term.loadAddon(search);
+// graphemes supersets unicode 11 width rules (emoji/ZWI correctness)
+term.unicode.activeVersion = 'graphemes';
+// Ctrl+Shift+F: find (prompt + next match)
+term.attachCustomKeyEventHandler((e) => {
+  if (e.ctrlKey && e.shiftKey && !e.altKey && e.key === 'F') {
+    e.preventDefault();
+    const q = window.prompt('Find:', search.getSearchOptions()?.searchString || '');
+    if (q) search.findNext(q, { incremental: false });
+    return false;
+  }
+  return true;
+});
 // ttyd's renderer chain: WebGL -> canvas -> dom
 function enableRenderer() {
   try {

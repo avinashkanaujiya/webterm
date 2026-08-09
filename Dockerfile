@@ -13,6 +13,9 @@ RUN cp node_modules/@xterm/xterm/lib/xterm.js public/ \
     && cp node_modules/@xterm/addon-web-links/lib/addon-web-links.js public/ \
     && cp node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js public/ \
     && cp node_modules/@xterm/addon-webgl/lib/addon-webgl.js public/ \
-    && cp node_modules/@xterm/addon-canvas/lib/addon-canvas.js public/
+    && cp node_modules/@xterm/addon-canvas/lib/addon-canvas.js public/ \
+    && cp node_modules/@xterm/addon-image/lib/addon-image.js public/ \
+    && cp node_modules/@xterm/addon-search/lib/addon-search.js public/ \
+    && cp node_modules/@xterm/addon-unicode-graphemes/lib/addon-unicode-graphemes.js public/
 EXPOSE 7682
 CMD ["node", "server.js"]
