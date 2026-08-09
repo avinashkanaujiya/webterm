@@ -24,6 +24,7 @@ const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript',
   '.css': 'text/css',
+  '.svg': 'image/svg+xml',
 };
 const PUBLIC = path.join(__dirname, 'public');
 const STATIC = {};
