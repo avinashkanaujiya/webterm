@@ -15,6 +15,7 @@ const pty = require('node-pty');
 
 const PORT = process.env.PORT || 7682;
 const SHELL_CMD = process.env.SHELL_CMD || '/bin/bash -l';
+const TITLE = process.env.TITLE || 'webterm';
 const REPLAY_LIMIT = 1024 * 1024; // keep last 1 MiB of output per session
 const Q_HIGH = 1024 * 1024; // per-client outstanding bytes: pause the pty above this
 const Q_LOW = 256 * 1024; // per-client outstanding bytes: resume when all below this
@@ -27,7 +28,9 @@ const MIME = {
 const PUBLIC = path.join(__dirname, 'public');
 const STATIC = {};
 for (const file of fs.readdirSync(PUBLIC)) {
-  STATIC['/' + file] = fs.readFileSync(path.join(PUBLIC, file));
+  let content = fs.readFileSync(path.join(PUBLIC, file));
+  if (file === 'index.html') content = content.toString().replaceAll('__TITLE__', TITLE);
+  STATIC['/' + file] = content;
 }
 
 // session = { id, proc, chunks: [Buffer], size, clients: Set<ws>, flowPaused, flowCheckScheduled }

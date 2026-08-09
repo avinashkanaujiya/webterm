@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>webterm</title>
+<title>__TITLE__</title>
 <link rel="stylesheet" href="/xterm.css">
 <style>
   html, body { height: 100%; margin: 0; background: #1e1e1e; }
@@ -74,6 +74,7 @@ function connect() {
         sid = m.id;
         localStorage.setItem(KEY, sid);
         sidEl.textContent = sid.slice(0, 8);
+        document.title = '__TITLE__';
         term.reset();
         replaying = m.replay;
         statusEl.textContent = m.replay ? 'session restored' : 'new session';
