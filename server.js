@@ -2,6 +2,10 @@
 // webterm — VS Code-style web terminal: real PTYs decoupled from browser
 // connections. Sessions survive refresh; recent output is replayed on attach.
 // Protocol: text frames = JSON control, binary frames = terminal output.
+//
+// Flow control (mirrors VS Code's ptyHost): output is queued per client with a
+// bounded watermark; when any client falls behind the PTY is paused (the shell
+// blocks on the pty buffer — nothing is dropped), and resumed when caught up.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -12,6 +16,8 @@ const pty = require('node-pty');
 const PORT = process.env.PORT || 7682;
 const SHELL_CMD = process.env.SHELL_CMD || '/bin/bash -l';
 const REPLAY_LIMIT = 1024 * 1024; // keep last 1 MiB of output per session
+const Q_HIGH = 1024 * 1024; // per-client outstanding bytes: pause the pty above this
+const Q_LOW = 256 * 1024; // per-client outstanding bytes: resume when all below this
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -24,8 +30,65 @@ for (const file of fs.readdirSync(PUBLIC)) {
   STATIC['/' + file] = fs.readFileSync(path.join(PUBLIC, file));
 }
 
-// session = { id, proc, chunks: [Buffer], size, clients: Set<ws> }
+// session = { id, proc, chunks: [Buffer], size, clients: Set<ws>, flowPaused, flowCheckScheduled }
 const sessions = new Map();
+
+function scheduleFlowCheck(session) {
+  if (session.flowCheckScheduled) return;
+  session.flowCheckScheduled = true;
+  setTimeout(() => {
+    session.flowCheckScheduled = false;
+    recomputeFlow(session);
+  }, 300);
+}
+
+// bytes handed to ws.send (bufferedAmount) + still queued, per client
+function outstanding(ws) {
+  return ws.qBytes + ws.bufferedAmount;
+}
+
+function recomputeFlow(session) {
+  if (!sessions.has(session.id)) return; // session exited
+  const anyOver = [...session.clients].some((c) => outstanding(c) > Q_HIGH);
+  const allLow = [...session.clients].every((c) => outstanding(c) <= Q_LOW);
+  if (anyOver && !session.flowPaused) {
+    session.flowPaused = true;
+    session.proc.pause();
+  } else if (allLow && session.flowPaused) {
+    session.flowPaused = false;
+    session.proc.resume();
+  }
+  if (session.flowPaused) {
+    // paused pty emits no onData, so keep rechecking until the client drains
+    scheduleFlowCheck(session);
+  }
+}
+
+function pump(ws) {
+  if (ws.pumping || !ws.session) return;
+  ws.pumping = true;
+  while (ws.q.length && ws.bufferedAmount < Q_HIGH && ws.readyState === ws.OPEN) {
+    const item = ws.q.shift();
+    ws.qBytes -= item.bytes;
+    ws.send(item.data, () => {
+      // chunk flushed to the socket — keep draining the queue, then re-evaluate
+      if (!ws.session) return;
+      pump(ws);
+      recomputeFlow(ws.session);
+    });
+  }
+  ws.pumping = false;
+  recomputeFlow(ws.session);
+}
+
+// one ordered frame queue per client: text (control) and binary (output)
+// frames keep their order, so 'live'/'exit' can never overtake pending output
+function enqueue(ws, data) {
+  const bytes = typeof data === 'string' ? Buffer.byteLength(data) : data.length;
+  ws.q.push({ data, bytes });
+  ws.qBytes += bytes;
+  pump(ws);
+}
 
 function appendOutput(session, data) {
   const buf = Buffer.from(data);
@@ -53,16 +116,26 @@ function spawnSession() {
     cwd: '/',
     env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', LANG: 'C.UTF-8', USER: 'root' },
   });
-  const session = { id: crypto.randomBytes(8).toString('hex'), proc, chunks: [], size: 0, clients: new Set() };
+  const session = {
+    id: crypto.randomBytes(8).toString('hex'),
+    proc,
+    chunks: [],
+    size: 0,
+    clients: new Set(),
+    flowPaused: false,
+    flowCheckScheduled: false,
+  };
   proc.onData((data) => {
     appendOutput(session, data);
-    for (const ws of session.clients) {
-      if (!ws.paused) safeSend(ws, Buffer.from(data));
-    }
+    const buf = Buffer.from(data);
+    for (const ws of session.clients) enqueue(ws, buf);
+    recomputeFlow(session);
   });
   proc.onExit(({ exitCode, signal }) => {
     console.log(`[webterm] session ${session.id} exited code=${exitCode} signal=${signal}`);
-    for (const ws of session.clients) safeSend(ws, JSON.stringify({ type: "exit", code: exitCode, signal }));
+    for (const ws of session.clients) {
+      enqueue(ws, JSON.stringify({ type: "exit", code: exitCode, signal }));
+    }
     sessions.delete(session.id);
   });
   console.log(`[webterm] session ${session.id} spawned: ${SHELL_CMD}`);
@@ -74,11 +147,11 @@ function attach(ws, session, cols, rows) {
   session.clients.add(ws);
   session.proc.resize(cols, rows);
   const hasReplay = session.chunks.length > 0;
-  safeSend(ws, JSON.stringify({ type: 'init', id: session.id, replay: hasReplay }));
+  enqueue(ws, JSON.stringify({ type: "init", id: session.id, replay: hasReplay }));
   if (hasReplay) {
-    safeSend(ws, JSON.stringify({ type: 'replay' }));
-    safeSend(ws, Buffer.concat(session.chunks));
-    safeSend(ws, JSON.stringify({ type: 'live' }));
+    enqueue(ws, JSON.stringify({ type: "replay" }));
+    enqueue(ws, Buffer.concat(session.chunks));
+    enqueue(ws, JSON.stringify({ type: "live" }));
   }
   console.log(`[webterm] session ${session.id} attached (clients=${session.clients.size})`);
 }
@@ -91,12 +164,10 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server, path: '/ws' });
 
-function safeSend(ws, data) {
-  if (ws.readyState === ws.OPEN) ws.send(data);
-}
-
 wss.on('connection', (ws) => {
-  ws.paused = false;
+  ws.q = [];
+  ws.qBytes = 0;
+  ws.pumping = false;
   ws.on('message', (raw) => {
     let msg;
     try {
@@ -112,8 +183,6 @@ wss.on('connection', (ws) => {
       switch (msg.type) {
         case 'input': ws.session.proc.write(msg.data); break;
         case 'resize': ws.session.proc.resize(msg.cols, msg.rows); break;
-        case 'pause': ws.paused = true; break;
-        case 'resume': ws.paused = false; break;
         case 'close': ws.session.proc.kill(); break;
       }
     }
@@ -121,6 +190,9 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     if (ws.session) {
       ws.session.clients.delete(ws);
+      ws.q.length = 0;
+      ws.qBytes = 0;
+      recomputeFlow(ws.session);
       console.log(`[webterm] session ${ws.session.id} detached (clients=${ws.session.clients.size})`);
     }
   });
