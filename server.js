@@ -73,8 +73,13 @@ function attach(ws, session, cols, rows) {
   ws.session = session;
   session.clients.add(ws);
   session.proc.resize(cols, rows);
-  safeSend(ws, JSON.stringify({ type: "init", id: session.id, replay: session.chunks.length > 0 }));
-  if (session.chunks.length > 0) safeSend(ws, Buffer.concat(session.chunks));
+  const hasReplay = session.chunks.length > 0;
+  safeSend(ws, JSON.stringify({ type: 'init', id: session.id, replay: hasReplay }));
+  if (hasReplay) {
+    safeSend(ws, JSON.stringify({ type: 'replay' }));
+    safeSend(ws, Buffer.concat(session.chunks));
+    safeSend(ws, JSON.stringify({ type: 'live' }));
+  }
   console.log(`[webterm] session ${session.id} attached (clients=${session.clients.size})`);
 }
 

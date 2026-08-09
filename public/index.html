@@ -36,9 +36,10 @@ const term = new Terminal({
   scrollback: 50000,
   theme: { background: '#1e1e1e' },
 });
-const fit = new FitAddon();
+const fit = new (window.FitAddon.FitAddon)();
 term.loadAddon(fit);
-term.loadAddon(new ClipboardAddon());
+term.loadAddon(new (window.ClipboardAddon.ClipboardAddon)());
+window.term = term; // handy for debugging, mirrors ttyd
 term.open(document.getElementById('term'));
 fit.fit();
 
@@ -50,6 +51,7 @@ let ws = null;
 let dead = false;   // shell exited — stop reconnecting until reload
 let paused = false;
 let pending = 0;
+let replaying = false;
 const HIGH = 200, LOW = 50;
 
 document.getElementById('new').onclick = () => {
@@ -73,7 +75,12 @@ function connect() {
         localStorage.setItem(KEY, sid);
         sidEl.textContent = sid.slice(0, 8);
         term.reset();
+        replaying = m.replay;
         statusEl.textContent = m.replay ? 'session restored' : 'new session';
+      } else if (m.type === 'replay') {
+        replaying = true;
+      } else if (m.type === 'live') {
+        replaying = false;
       } else if (m.type === 'exit') {
         dead = true;
         statusEl.textContent = 'process exited — reload for a new shell';
