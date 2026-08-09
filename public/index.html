@@ -16,6 +16,9 @@
 <script src="/xterm.js"></script>
 <script src="/addon-fit.js"></script>
 <script src="/addon-clipboard.js"></script>
+<script src="/addon-unicode11.js"></script>
+<script src="/addon-webgl.js"></script>
+<script src="/addon-canvas.js"></script>
 <script>
 'use strict';
 const term = new Terminal({
@@ -23,11 +26,26 @@ const term = new Terminal({
   fontSize: 14,
   fontFamily: 'Menlo, Consolas, "DejaVu Sans Mono", monospace',
   scrollback: 50000,
+  unicodeVersion: '11',
   theme: { background: '#1e1e1e' },
 });
 const fit = new (window.FitAddon.FitAddon)();
 term.loadAddon(fit);
 term.loadAddon(new (window.ClipboardAddon.ClipboardAddon)());
+term.loadAddon(new (window.Unicode11Addon.Unicode11Addon)());
+// canvas/WebGL renderer (like ttyd): pixel-exact cells fix right-edge and
+// box-drawing misalignment of the default DOM renderer; fall back to canvas
+// if WebGL is unavailable
+function loadRenderer() {
+  try {
+    term.loadAddon(new (window.WebglAddon.WebglAddon)());
+  } catch (e) {
+    try {
+      term.loadAddon(new (window.CanvasAddon.CanvasAddon)());
+    } catch (e2) { /* keep DOM renderer */ }
+  }
+}
+loadRenderer();
 window.term = term; // handy for debugging, mirrors ttyd
 term.open(document.getElementById('term'));
 fit.fit();
