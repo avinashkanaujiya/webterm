@@ -53,6 +53,7 @@ term.unicode.activeVersion = '15-graphemes';
 // Ctrl+Shift+F: find (prompt + next match)
 let lastQuery = '';
 term.attachCustomKeyEventHandler((e) => {
+  if (e.type !== 'keydown') return true; // handler fires on keyup too
   if (e.ctrlKey && e.shiftKey && !e.altKey && e.key === 'F') {
     e.preventDefault();
     const q = window.prompt('Find:', lastQuery);
@@ -65,11 +66,13 @@ term.attachCustomKeyEventHandler((e) => {
   // Ctrl+= / Ctrl+- font zoom (there is no official zoom addon)
   if (e.ctrlKey && !e.altKey && !e.metaKey) {
     if (e.key === '=' || e.key === '+') {
+      e.preventDefault();
       term.options.fontSize = Math.min(32, term.options.fontSize + 1);
       fit.fit();
       return false;
     }
     if (e.key === '-' || e.key === '_') {
+      e.preventDefault();
       term.options.fontSize = Math.max(6, term.options.fontSize - 1);
       fit.fit();
       return false;
