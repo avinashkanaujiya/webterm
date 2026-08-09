@@ -47,8 +47,9 @@ term.loadAddon(new (window.UnicodeGraphemesAddon.UnicodeGraphemesAddon)());
 term.loadAddon(new (window.ImageAddon.ImageAddon)()); // sixel images
 const search = new (window.SearchAddon.SearchAddon)();
 term.loadAddon(search);
-// graphemes supersets unicode 11 width rules (emoji/ZWI correctness)
-term.unicode.activeVersion = 'graphemes';
+// graphemes supersets unicode 11 width rules (emoji/ZWI correctness);
+// the addon registers its version as '15-graphemes'
+term.unicode.activeVersion = '15-graphemes';
 // Ctrl+Shift+F: find (prompt + next match)
 term.attachCustomKeyEventHandler((e) => {
   if (e.ctrlKey && e.shiftKey && !e.altKey && e.key === 'F') {
