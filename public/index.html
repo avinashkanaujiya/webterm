@@ -8,7 +8,8 @@
 <link rel="stylesheet" href="/xterm.css">
 <style>
   html, body { height: 100%; margin: 0; overflow: hidden; background: #1e1e1e; }
-  #term { height: 100%; padding: 6px 24px 6px 8px; box-sizing: border-box; }
+  #term { height: 100%; }
+  .xterm { height: 100%; padding: 6px 24px 6px 8px; box-sizing: border-box; }
 </style>
 </head>
 <body>
@@ -51,6 +52,11 @@ window.term = term; // handy for debugging, mirrors ttyd
 term.open(document.getElementById('term'));
 fit.fit();
 term.focus(); // cursor focused immediately, no click needed
+// cell metrics can shift until the font is loaded — re-fit so cols/canvas
+// agree (stale metrics cause the canvas to overflow the padded box)
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(() => { fit.fit(); term.focus(); });
+}
 
 const KEY = 'webterm.session';
 let sid = localStorage.getItem(KEY) || ''; // persisted session id -> re-attach
