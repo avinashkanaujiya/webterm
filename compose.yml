@@ -1,0 +1,78 @@
+x-webterm: &webterm
+  image: box.reg/webterm:latest
+  restart: unless-stopped
+  init: true
+  pid: host
+  privileged: true
+  environment: &webterm-env
+    TZ: Asia/Kolkata
+    SHELL_CMD: "nsenter -t 1 -m -u -i -n -p -- bash -c 'export USER=root; export LANG=en_US.UTF-8; cd /root && exec bash -l'"
+  deploy:
+    resources:
+      limits:
+        cpus: '1.0'
+        memory: 512M
+      reservations:
+        memory: 128M
+  networks:
+    - caddy_proxy
+
+services:
+  t1:
+    <<: *webterm
+    container_name: t1
+    environment:
+      <<: *webterm-env
+      TITLE: t1-box
+  t2:
+    <<: *webterm
+    container_name: t2
+    environment:
+      <<: *webterm-env
+      TITLE: t2-box
+  t3:
+    <<: *webterm
+    container_name: t3
+    environment:
+      <<: *webterm-env
+      TITLE: t3-box
+  t4:
+    <<: *webterm
+    container_name: t4
+    environment:
+      <<: *webterm-env
+      TITLE: t4-box
+  t5:
+    <<: *webterm
+    container_name: t5
+    environment:
+      <<: *webterm-env
+      TITLE: t5-box
+  t6:
+    <<: *webterm
+    container_name: t6
+    environment:
+      <<: *webterm-env
+      TITLE: t6-box
+  t7:
+    <<: *webterm
+    container_name: t7
+    environment:
+      <<: *webterm-env
+      TITLE: t7-box
+  t8:
+    <<: *webterm
+    container_name: t8
+    environment:
+      <<: *webterm-env
+      TITLE: t8-box
+  t9:
+    <<: *webterm
+    container_name: t9
+    environment:
+      <<: *webterm-env
+      TITLE: t9-box
+
+networks:
+  caddy_proxy:
+    external: true
