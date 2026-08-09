@@ -10,10 +10,12 @@ x-webterm: &webterm
   deploy:
     resources:
       limits:
-        cpus: '1.0'
-        memory: 512M
+        cpus: '2.0'
+        # omp agent (LLM workers + headless chromium broker) needs GBs — the
+        # ttyd boxes run this workload with no limit; 512M OOM-killed it
+        memory: 8G
       reservations:
-        memory: 128M
+        memory: 256M
   networks:
     - caddy_proxy
 

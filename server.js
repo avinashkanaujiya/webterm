@@ -40,9 +40,11 @@ const sessions = new Map();
 const FLOW_TICK_MS = 500;
 const FLOW_FORCE_RESUME_MS = 10000; // pty paused this long while drained -> retry resume
 
-// bytes handed to ws.send (bufferedAmount) + still queued, per client
+// bytes handed to ws.send (bufferedAmount) + still queued (qBytes) + backed
+// up in the socket's own write queue (writableLength) — without the socket
+// queue the metric stays ~0 under congestion and flow control never engages
 function outstanding(ws) {
-  return ws.qBytes + ws.bufferedAmount;
+  return ws.qBytes + ws.bufferedAmount + (ws._socket ? ws._socket.writableLength : 0);
 }
 
 function recomputeFlow(session) {
@@ -81,7 +83,7 @@ function flowTick(session) {
 function pump(ws) {
   if (ws.pumping || !ws.session) return;
   ws.pumping = true;
-  while (ws.q.length && ws.bufferedAmount < Q_HIGH && ws.readyState === ws.OPEN) {
+  while (ws.q.length && outstanding(ws) < Q_HIGH && ws.readyState === ws.OPEN) {
     const item = ws.q.shift();
     ws.qBytes -= item.bytes;
     ws.send(item.data, () => {
