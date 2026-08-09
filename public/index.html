@@ -16,21 +16,47 @@
 <script src="/xterm.js"></script>
 <script src="/addon-fit.js"></script>
 <script src="/addon-clipboard.js"></script>
+<script src="/addon-web-links.js"></script>
+<script src="/addon-unicode11.js"></script>
+<script src="/addon-webgl.js"></script>
+<script src="/addon-canvas.js"></script>
 <script>
 'use strict';
+// Rendering config mirrors ttyd's client exactly (app.tsx): WebGL renderer
+// with canvas fallback, Unicode 11 width rules, fontSize 13, and ttyd's exact
+// font stack — font family/size determine cell metrics and box-drawing stroke
+// alignment, so deviating from ttyd's values misaligns borders by a column.
 const term = new Terminal({
   cursorBlink: true,
-  fontSize: 14,
-  fontFamily: 'Menlo, Consolas, "DejaVu Sans Mono", monospace',
+  fontSize: 13,
+  fontFamily: 'Consolas,Liberation Mono,Menlo,Courier,monospace',
   scrollback: 50000,
+  unicodeVersion: '11',
+  allowProposedApi: true, // Unicode11Addon uses a proposed API (term.unicode)
   theme: { background: '#1e1e1e' },
 });
 const fit = new (window.FitAddon.FitAddon)();
 term.loadAddon(fit);
 term.loadAddon(new (window.ClipboardAddon.ClipboardAddon)());
+term.loadAddon(new (window.WebLinksAddon.WebLinksAddon)());
+term.loadAddon(new (window.Unicode11Addon.Unicode11Addon)());
+// ttyd's renderer chain: WebGL -> canvas -> dom
+function enableRenderer() {
+  try {
+    const webgl = new (window.WebglAddon.WebglAddon)();
+    webgl.onContextLoss(() => webgl.dispose());
+    term.loadAddon(webgl);
+    return;
+  } catch (e) { /* fall through */ }
+  try {
+    term.loadAddon(new (window.CanvasAddon.CanvasAddon)());
+  } catch (e2) { /* keep DOM renderer */ }
+}
 window.term = term; // handy for debugging, mirrors ttyd
 term.open(document.getElementById('term'));
 fit.fit();
+// ttyd loads the renderer after open; WebGL failures surface in the try/catch
+enableRenderer();
 term.focus(); // cursor focused immediately, no click needed
 
 const KEY = 'webterm.session';
