@@ -10,6 +10,7 @@ The architecture mirrors VS Code's terminal: the browser runs a full terminal em
 - **Screen restore on re-attach** — recent output is replayed to a fresh client (`replay`/`live` protocol markers), so the visible screen and scrollback come back after a refresh, including full-screen TUIs.
 - **Native copy-paste** — selection and clipboard are browser operations; no tmux in the path, so no nested emulator and no tmux mouse capture.
 - **Zero-loss flow control** — output is queued per client with bounded watermarks (1 MiB high / 256 KiB low); when a client falls behind, the PTY itself is paused (the shell blocks on the pty buffer), then resumed when it catches up. Nothing is dropped (verified with a 1,000,000-line flood through a throttled client).
+- **Clickable links** — URLs render as links: hover shows a pointer cursor, click opens them in a new tab (WebLinksAddon).
 - **Sixel images** — `lsix` / `img2sixel` output renders inline.
 - **Multiple clients per session** — output broadcasts to every attached client.
 - **No tmux required** — persistence is handled by the server process.
