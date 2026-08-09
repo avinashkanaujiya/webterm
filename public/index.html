@@ -57,6 +57,19 @@ term.attachCustomKeyEventHandler((e) => {
     if (q) search.findNext(q, { incremental: false });
     return false;
   }
+  // Ctrl+= / Ctrl+- font zoom (there is no official zoom addon)
+  if (e.ctrlKey && !e.altKey && !e.metaKey) {
+    if (e.key === '=' || e.key === '+') {
+      term.options.fontSize = Math.min(32, term.options.fontSize + 1);
+      fit.fit();
+      return false;
+    }
+    if (e.key === '-' || e.key === '_') {
+      term.options.fontSize = Math.max(6, term.options.fontSize - 1);
+      fit.fit();
+      return false;
+    }
+  }
   return true;
 });
 // ttyd's renderer chain: WebGL -> canvas -> dom
