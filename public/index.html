@@ -27,6 +27,7 @@ const term = new Terminal({
   fontFamily: 'Menlo, Consolas, "DejaVu Sans Mono", monospace',
   scrollback: 50000,
   unicodeVersion: '11',
+  allowProposedApi: true, // Unicode11Addon uses a proposed API (term.unicode)
   theme: { background: '#1e1e1e' },
 });
 const fit = new (window.FitAddon.FitAddon)();
