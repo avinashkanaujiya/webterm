@@ -18,12 +18,12 @@ The architecture mirrors VS Code's terminal: the browser runs a full terminal em
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl+Shift+C` / `Ctrl+Shift+V` | copy / paste |
 | select text (mouse) | copies to the OS clipboard automatically |
+| `Ctrl+V` | paste (browser-native; right-click paste works too) |
 | `Ctrl+Shift+F` | find (prompt + next match) |
 | `Ctrl+=` / `Ctrl+-` | increase / decrease font size |
 | type `exit` | end the shell; **reload the page** to start a fresh session |
-| `Ctrl+C` (with a selection) | copies the selection instead of sending SIGINT |
+| `Ctrl+C` (with a selection) | the selection was already copied on select; otherwise sends SIGINT |
 
 There is no "new session" button by design: `exit` + reload gives you a fresh shell, while ordinary refreshes keep the same session.
 

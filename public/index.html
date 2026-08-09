@@ -51,11 +51,15 @@ term.loadAddon(search);
 // the addon registers its version as '15-graphemes'
 term.unicode.activeVersion = '15-graphemes';
 // Ctrl+Shift+F: find (prompt + next match)
+let lastQuery = '';
 term.attachCustomKeyEventHandler((e) => {
   if (e.ctrlKey && e.shiftKey && !e.altKey && e.key === 'F') {
     e.preventDefault();
-    const q = window.prompt('Find:', search.getSearchOptions()?.searchString || '');
-    if (q) search.findNext(q, { incremental: false });
+    const q = window.prompt('Find:', lastQuery);
+    if (q) {
+      lastQuery = q;
+      search.findNext(q, { incremental: false });
+    }
     return false;
   }
   // Ctrl+= / Ctrl+- font zoom (there is no official zoom addon)
