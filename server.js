@@ -166,9 +166,12 @@ const server = http.createServer((req, res) => {
   res.end(STATIC[file]);
 });
 
-const wss = new WebSocketServer({ server, path: '/ws' });
+// perMessageDeflate off: terminal streams are latency-sensitive and per-frame
+// deflate adds CPU + jitter (ttyd sends raw bytes; so do we now)
+const wss = new WebSocketServer({ server, path: '/ws', perMessageDeflate: false });
 
 wss.on('connection', (ws) => {
+  ws._socket.setNoDelay(true); // no Nagle on terminal traffic
   ws.q = [];
   ws.qBytes = 0;
   ws.pumping = false;

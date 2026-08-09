@@ -50,6 +50,7 @@ loadRenderer();
 window.term = term; // handy for debugging, mirrors ttyd
 term.open(document.getElementById('term'));
 fit.fit();
+term.focus(); // cursor focused immediately, no click needed
 
 const KEY = 'webterm.session';
 let sid = localStorage.getItem(KEY) || ''; // persisted session id -> re-attach
@@ -71,6 +72,7 @@ function connect() {
         localStorage.setItem(KEY, sid);
         term.reset();
         replaying = m.replay;
+        term.focus();
       } else if (m.type === 'replay') {
         replaying = true;
       } else if (m.type === 'live') {
