@@ -34,17 +34,11 @@ for (const file of fs.readdirSync(PUBLIC)) {
   STATIC['/' + file] = content;
 }
 
-// session = { id, proc, chunks: [Buffer], size, clients: Set<ws>, flowPaused, flowCheckScheduled }
+// session = { id, proc, chunks: [Buffer], size, clients: Set<ws>, flowPaused, pausedSince, flowTimer }
 const sessions = new Map();
 
-function scheduleFlowCheck(session) {
-  if (session.flowCheckScheduled) return;
-  session.flowCheckScheduled = true;
-  setTimeout(() => {
-    session.flowCheckScheduled = false;
-    recomputeFlow(session);
-  }, 300);
-}
+const FLOW_TICK_MS = 500;
+const FLOW_FORCE_RESUME_MS = 10000; // pty paused this long while drained -> retry resume
 
 // bytes handed to ws.send (bufferedAmount) + still queued, per client
 function outstanding(ws) {
@@ -55,17 +49,33 @@ function recomputeFlow(session) {
   if (!sessions.has(session.id)) return; // session exited
   const anyOver = [...session.clients].some((c) => outstanding(c) > Q_HIGH);
   const allLow = [...session.clients].every((c) => outstanding(c) <= Q_LOW);
+  const now = Date.now();
   if (anyOver && !session.flowPaused) {
     session.flowPaused = true;
+    session.pausedSince = now;
     session.proc.pause();
+    console.log(`[flow] ${session.id.slice(0, 6)} paused`);
   } else if (allLow && session.flowPaused) {
     session.flowPaused = false;
     session.proc.resume();
+    console.log(`[flow] ${session.id.slice(0, 6)} resumed after ${now - session.pausedSince}ms`);
+  } else if (session.flowPaused && allLow && now - session.pausedSince > FLOW_FORCE_RESUME_MS) {
+    // normal resume path should have fired; retry in case node-pty's read
+    // stream didn't restart — self-heal instead of leaving the pty frozen
+    session.flowPaused = false;
+    session.proc.resume();
+    console.log(`[flow] ${session.id.slice(0, 6)} FORCED resume after ${now - session.pausedSince}ms`);
+  } else if (session.flowPaused && now - session.pausedSince > FLOW_FORCE_RESUME_MS * 3) {
+    console.log(`[flow] ${session.id.slice(0, 6)} still paused ${now - session.pausedSince}ms outstanding=[${[...session.clients].map((c) => outstanding(c)).join(',')}]`);
   }
-  if (session.flowPaused) {
-    // paused pty emits no onData, so keep rechecking until the client drains
-    scheduleFlowCheck(session);
-  }
+}
+
+// deterministic per-session tick: pump queues + re-evaluate flow. Runs on a
+// timer so pause/resume decisions never depend on ws callbacks (whose loss
+// previously left the pty paused forever after heavy agent output)
+function flowTick(session) {
+  for (const ws of session.clients) pump(ws);
+  recomputeFlow(session);
 }
 
 function pump(ws) {
@@ -75,14 +85,10 @@ function pump(ws) {
     const item = ws.q.shift();
     ws.qBytes -= item.bytes;
     ws.send(item.data, () => {
-      // chunk flushed to the socket — keep draining the queue, then re-evaluate
-      if (!ws.session) return;
-      pump(ws);
-      recomputeFlow(ws.session);
+      if (ws.session) pump(ws); // best-effort immediate drain; flowTick is authoritative
     });
   }
   ws.pumping = false;
-  recomputeFlow(ws.session);
 }
 
 // one ordered frame queue per client: text (control) and binary (output)
@@ -127,7 +133,8 @@ function spawnSession() {
     size: 0,
     clients: new Set(),
     flowPaused: false,
-    flowCheckScheduled: false,
+    pausedSince: 0,
+    flowTimer: setInterval(() => flowTick(session), FLOW_TICK_MS),
   };
   proc.onData((data) => {
     appendOutput(session, data);
@@ -137,8 +144,9 @@ function spawnSession() {
   });
   proc.onExit(({ exitCode, signal }) => {
     console.log(`[webterm] session ${session.id} exited code=${exitCode} signal=${signal}`);
+    clearInterval(session.flowTimer);
     for (const ws of session.clients) {
-      enqueue(ws, JSON.stringify({ type: "exit", code: exitCode, signal }));
+      enqueue(ws, JSON.stringify({ type: 'exit', code: exitCode, signal }));
     }
     sessions.delete(session.id);
   });
