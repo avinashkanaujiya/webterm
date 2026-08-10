@@ -17,6 +17,7 @@ const PORT = process.env.PORT || 7682;
 const SHELL_CMD = process.env.SHELL_CMD || '/bin/bash -l';
 const TITLE = process.env.TITLE || 'webterm';
 const REPLAY_LIMIT = 1024 * 1024; // keep last 1 MiB of output per session
+const REPLAY_FRAME = 256 * 1024; // split replay into <= 256 KiB ws frames
 const Q_HIGH = 1024 * 1024; // per-client outstanding bytes: pause the pty above this
 const Q_LOW = 256 * 1024; // per-client outstanding bytes: resume when all below this
 
@@ -49,8 +50,11 @@ function outstanding(ws) {
 
 function recomputeFlow(session) {
   if (!sessions.has(session.id)) return; // session exited
-  const anyOver = [...session.clients].some((c) => outstanding(c) > Q_HIGH);
-  const allLow = [...session.clients].every((c) => outstanding(c) <= Q_LOW);
+  // clients draining the replay burst are excluded: their outstanding is
+  // inflated by the bounded (< 1 MiB) replay, which must drain regardless
+  const active = [...session.clients].filter((c) => !c.q.some((i) => i.urgent));
+  const anyOver = active.some((c) => outstanding(c) > Q_HIGH);
+  const allLow = active.every((c) => outstanding(c) <= Q_LOW);
   const now = Date.now();
   if (anyOver && !session.flowPaused) {
     session.flowPaused = true;
@@ -83,7 +87,10 @@ function flowTick(session) {
 function pump(ws) {
   if (ws.pumping || !ws.session) return;
   ws.pumping = true;
-  while (ws.q.length && outstanding(ws) < Q_HIGH && ws.readyState === ws.OPEN) {
+  // urgent frames (the attach/replay burst) bypass the watermark — they are
+  // bounded at REPLAY_LIMIT total, but a queued replay >= Q_HIGH could never
+  // pass the outstanding() < Q_HIGH gate and would wedge the queue forever
+  while (ws.q.length && ws.readyState === ws.OPEN && (ws.q[0].urgent || outstanding(ws) < Q_HIGH)) {
     const item = ws.q.shift();
     ws.qBytes -= item.bytes;
     ws.send(item.data, () => {
@@ -95,9 +102,9 @@ function pump(ws) {
 
 // one ordered frame queue per client: text (control) and binary (output)
 // frames keep their order, so 'live'/'exit' can never overtake pending output
-function enqueue(ws, data) {
+function enqueue(ws, data, urgent) {
   const bytes = typeof data === 'string' ? Buffer.byteLength(data) : data.length;
-  ws.q.push({ data, bytes });
+  ws.q.push({ data, bytes, urgent: !!urgent });
   ws.qBytes += bytes;
   pump(ws);
 }
@@ -161,11 +168,16 @@ function attach(ws, session, cols, rows) {
   session.clients.add(ws);
   session.proc.resize(cols, rows);
   const hasReplay = session.chunks.length > 0;
-  enqueue(ws, JSON.stringify({ type: "init", id: session.id, replay: hasReplay }));
+  enqueue(ws, JSON.stringify({ type: "init", id: session.id, replay: hasReplay }), true);
   if (hasReplay) {
-    enqueue(ws, JSON.stringify({ type: "replay" }));
-    enqueue(ws, Buffer.concat(session.chunks));
-    enqueue(ws, JSON.stringify({ type: "live" }));
+    enqueue(ws, JSON.stringify({ type: "replay" }), true);
+    // split into <= REPLAY_FRAME pieces: one giant frame >= Q_HIGH would wedge
+    // the pump gate, and small frames let the browser breathe between parses
+    const total = Buffer.concat(session.chunks); // <= REPLAY_LIMIT
+    for (let off = 0; off < total.length; off += REPLAY_FRAME) {
+      enqueue(ws, total.subarray(off, Math.min(off + REPLAY_FRAME, total.length)), true);
+    }
+    enqueue(ws, JSON.stringify({ type: "live" }), true);
   }
   console.log(`[webterm] session ${session.id} attached (clients=${session.clients.size})`);
 }

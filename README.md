@@ -73,6 +73,7 @@ Browser (xterm.js)                      Server (Node)
 
 - **Protocol** — text frames are JSON control (`hello`, `input`, `resize`, `close`, `init`, `replay`, `live`, `exit`); binary frames are raw terminal output. Control frames go through the same per-client queue as output, so `live`/`exit` can never overtake pending bytes.
 - **Flow control** — the server hands output to each client from a bounded queue (1 MiB high watermark); when any client's outstanding bytes exceed the watermark the PTY is paused and a recheck timer runs until it drains (256 KiB low watermark resumes it). `perMessageDeflate` is off and `TCP_NODELAY` on — terminal streams are latency-sensitive.
+- **Replay on re-attach** — the ring (≤ 1 MiB) is split into 256 KiB frames marked *urgent*, so they bypass the flow watermark (a single replay frame ≥ the 1 MiB watermark could never pass the `outstanding < Q_HIGH` pump gate and wedged the queue forever — blank screen on refresh after a long session). Clients draining a replay burst are excluded from pause/resume decisions.
 - **Rendering** — mirrors the ttyd client exactly: WebGL renderer with canvas fallback, Unicode `15-graphemes` width rules (emoji/ZWI aware), fontSize 13, font stack `Consolas,Liberation Mono,Menlo,Courier,monospace`. Deviating from this font/size stack changes cell metrics and misaligns box-drawing borders by a column.
 
 ## Testing
@@ -83,6 +84,7 @@ Headless tests in `test/` run against any live instance:
 WEBTERM_URL=ws://t1.homelab/ws node test/session-persistence.test.js   # session survives disconnect; same shell
 WEBTERM_URL=ws://t1.homelab/ws node test/flood-flow-control.test.js    # 1M-line flood, zero drops, no deadlock
 WEBTERM_URL=ws://t1.homelab/ws node test/replay-ordering.test.js       # init→replay→live→exit ordering
+WEBTERM_URL=ws://t1.homelab/ws node test/replay-full-ring.test.js      # re-attach with a full 1 MiB ring delivers replay
 ```
 
 Defaults to `ws://127.0.0.1:7682/ws` for a local `node server.js`.
