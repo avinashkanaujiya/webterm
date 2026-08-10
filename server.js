@@ -48,13 +48,21 @@ function outstanding(ws) {
   return ws.qBytes + ws.bufferedAmount + (ws._socket ? ws._socket.writableLength : 0);
 }
 
+// pure flow decision over client-like objects ({ qBytes, bufferedAmount,
+// _socket: { writableLength }, replayPending }) — exported for unit tests.
+// replay bytes still in flight are catch-up, not live backlog: subtract them
+// so the watermark bounds each client's LIVE output (bounded-queue contract),
+// while a slow replay drain alone never freezes the pty
+function flowDecision(clients) {
+  const live = (c) => outstanding(c) - (c.replayPending || 0);
+  const anyOver = clients.some((c) => live(c) > Q_HIGH);
+  const allLow = clients.every((c) => live(c) <= Q_LOW);
+  return { anyOver, allLow };
+}
+
 function recomputeFlow(session) {
   if (!sessions.has(session.id)) return; // session exited
-  // clients draining the replay burst are excluded: their outstanding is
-  // inflated by the bounded (< 1 MiB) replay, which must drain regardless
-  const active = [...session.clients].filter((c) => !c.q.some((i) => i.urgent));
-  const anyOver = active.some((c) => outstanding(c) > Q_HIGH);
-  const allLow = active.every((c) => outstanding(c) <= Q_LOW);
+  const { anyOver, allLow } = flowDecision([...session.clients]);
   const now = Date.now();
   if (anyOver && !session.flowPaused) {
     session.flowPaused = true;
@@ -94,6 +102,10 @@ function pump(ws) {
     const item = ws.q.shift();
     ws.qBytes -= item.bytes;
     ws.send(item.data, () => {
+      // replay bytes leave the in-flight count as their frames flush; once
+      // the last urgent frame (the live marker) is flushed, replayPending is
+      // 0 and the client is accounted normally again
+      if (item.urgent && ws.replayPending) ws.replayPending -= item.bytes;
       if (ws.session) pump(ws); // best-effort immediate drain; flowTick is authoritative
     });
   }
@@ -168,16 +180,21 @@ function attach(ws, session, cols, rows) {
   session.clients.add(ws);
   session.proc.resize(cols, rows);
   const hasReplay = session.chunks.length > 0;
-  enqueue(ws, JSON.stringify({ type: "init", id: session.id, replay: hasReplay }), true);
+  const initMsg = JSON.stringify({ type: "init", id: session.id, replay: hasReplay });
+  ws.replayPending = 0;
+  enqueue(ws, initMsg, true);
   if (hasReplay) {
+    const total = Buffer.concat(session.chunks); // <= REPLAY_LIMIT
+    const liveMsg = JSON.stringify({ type: "live" });
+    // in-flight replay bytes (excluded from the live watermark until flushed)
+    ws.replayPending = Buffer.byteLength(initMsg) + Buffer.byteLength('{"type":"replay"}') + total.length + Buffer.byteLength(liveMsg);
     enqueue(ws, JSON.stringify({ type: "replay" }), true);
     // split into <= REPLAY_FRAME pieces: one giant frame >= Q_HIGH would wedge
     // the pump gate, and small frames let the browser breathe between parses
-    const total = Buffer.concat(session.chunks); // <= REPLAY_LIMIT
     for (let off = 0; off < total.length; off += REPLAY_FRAME) {
       enqueue(ws, total.subarray(off, Math.min(off + REPLAY_FRAME, total.length)), true);
     }
-    enqueue(ws, JSON.stringify({ type: "live" }), true);
+    enqueue(ws, liveMsg, true); // last burst frame
   }
   console.log(`[webterm] session ${session.id} attached (clients=${session.clients.size})`);
 }
@@ -196,6 +213,7 @@ wss.on('connection', (ws) => {
   ws._socket.setNoDelay(true); // no Nagle on terminal traffic
   ws.q = [];
   ws.qBytes = 0;
+  ws.replayPending = 0;
   ws.pumping = false;
   ws.on('message', (raw) => {
     let msg;
@@ -232,7 +250,11 @@ function shutdown() {
   for (const s of sessions.values()) s.proc.kill();
   process.exit(0);
 }
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
 
-server.listen(PORT, () => console.log(`[webterm] listening on :${PORT}`));
+if (require.main === module) {
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+  server.listen(PORT, () => console.log(`[webterm] listening on :${PORT}`));
+} else {
+  module.exports = { flowDecision, outstanding, Q_HIGH, Q_LOW, REPLAY_LIMIT };
+}
