@@ -196,21 +196,24 @@ function maybeSwap() {
     // cleanup of the old terminal — never touches the committed new one
     if (old.renderer) { try { old.renderer.dispose(); } catch (e) { /* defensive */ } }
     old.term.dispose(); // removes its element too; disposes addons
-    flushPostLive(current.term);
   } catch (err) {
     console.error('[webterm] swap failed:', err);
     if (!committed) {
       // preparation failed: the old terminal is still live and visible —
-      // the failed scratch must not leave a second element in the container,
-      // and frames parked while the swap was pending go to the old terminal
-      // (they are newer than the preview, older than anything that follows)
+      // the failed scratch must not leave a second element in the container
       try { s.term.dispose(); } catch (e) { /* best-effort */ }
-      flushPostLive(old.term);
+      flushPostLive(old.term); // parked frames go to the old terminal
     } else {
       // commit succeeded, old cleanup failed: the new terminal is live; make
-      // sure a stale old element can't sit above it
+      // sure a stale old element can't sit above it (its frames are drained
+      // in the finally below)
       if (old.term.element) { try { old.term.element.remove(); } catch (e) {} }
     }
+  } finally {
+    // drain frames parked while the swap was pending — committed: to the new
+    // terminal (even if old cleanup threw above); not committed: already
+    // drained to the old terminal in the catch. Exactly one drain per path.
+    if (committed) flushPostLive(current.term);
   }
 }
 
