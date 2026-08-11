@@ -39,11 +39,6 @@
 // scrollback, ready for live bytes.
 const container = document.getElementById('term');
 const KEY = 'webterm.session';
-// TEMP DEBUG — remove after diagnosing fill stall
-window.__wt = { log: [], lastError: null };
-const wtlog = (ev) => { try { window.__wt.log.push(ev); } catch {} };
-window.addEventListener('error', (e) => { window.__wt.lastError = e.message + '\n' + (e.error && e.error.stack || ''); });
-window.addEventListener('unhandledrejection', (e) => { window.__wt.lastError = 'REJECTION: ' + (e.reason && (e.reason.stack || e.reason.message || e.reason)); });
 let sid = localStorage.getItem(KEY) || ''; // persisted session id -> re-attach
 let ws = null;
 let dead = false;   // shell exited — stop reconnecting until reload
@@ -165,7 +160,6 @@ function writeOut(bytes) {
 // it) — swapping only the buffer lines would leave the preview parser's state
 // active for subsequent live bytes. Runs at most once per attach.
 function maybeSwap() {
-  wtlog('maybeSwap enter: scratch=' + !!scratch + ' fillDone=' + fillDone + ' pending=' + pendingWrites);
   if (!scratch || !fillDone || pendingWrites !== 0) return;
   const s = scratch;
   scratch = null;
@@ -176,9 +170,7 @@ function maybeSwap() {
     // the core is alive keeps every addon's dispose clean.
     if (current.renderer) { try { current.renderer.dispose(); } catch (e) { /* defensive */ } }
     current.term.dispose(); // removes its element too; disposes addons
-    wtlog('maybeSwap: disposed preview');
     s.term.open(container);
-    wtlog('maybeSwap: opened scratch');
     s.term.scrollToBottom();
     const renderer = enableRenderer(s.term);
     s.fit.fit();
@@ -189,12 +181,10 @@ function maybeSwap() {
     const queued = postLive;
     postLive = [];
     for (const bytes of queued) current.term.write(bytes);
-    wtlog('maybeSwap: done baseY=' + s.term.buffer.active.baseY);
   } catch (err) {
     // never leave the page blank: if the old terminal is gone but the new one
     // failed to attach, put the old element back so a reload can recover
     console.error('[webterm] swap failed:', err);
-    window.__wt.lastError = err && (err.stack || err.message);
     if (container.children.length === 0 && current.term && current.term.element) {
       container.appendChild(current.term.element);
     }
@@ -208,10 +198,8 @@ function connect() {
     ws.send(JSON.stringify({ type: 'hello', id: sid, cols: current.term.cols, rows: current.term.rows }));
   };
   ws.onmessage = (e) => {
-    try {
-      if (typeof e.data === 'string') {
+    if (typeof e.data === 'string') {
       const m = JSON.parse(e.data);
-      wtlog('recv ' + m.type + ' (scratch=' + !!scratch + ' fillDone=' + fillDone + ' pending=' + pendingWrites + ' swapPending=' + swapPending + ')');
       if (m.type === 'init') {
         sid = m.id;
         localStorage.setItem(KEY, sid);
@@ -225,7 +213,6 @@ function connect() {
         replaying = true;
       } else if (m.type === 'fill') {
         scratch = makeTerminal(false); // hidden; parses the full ring in order
-        wtlog('fill: scratch created');
       } else if (m.type === 'live') {
         fillDone = true;
         swapPending = !!scratch;
@@ -242,15 +229,10 @@ function connect() {
       // fill phase: hidden terminal rebuilds the exact end state
       pendingWrites++;
       scratch.term.write(bytes, () => {
-        wtlog('write cb fired (pending ' + pendingWrites + ' -> ' + (pendingWrites - 1) + ')');
         if (--pendingWrites === 0) maybeSwap();
       });
     } else {
       writeOut(bytes);
-    }
-    } catch (err) {
-      wtlog('HANDLER THREW: ' + (err && (err.stack || err.message)));
-      window.__wt.lastError = err && (err.stack || err.message);
     }
   };
   ws.onclose = () => {
