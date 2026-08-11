@@ -68,17 +68,22 @@ function termOptions() {
   };
 }
 
-// ttyd's renderer chain: WebGL -> canvas -> dom
+// ttyd's renderer chain: WebGL -> canvas -> dom. Returns the loaded renderer
+// addon so the swap can dispose it before term.dispose() (the WebGL addon's
+// own dispose throws in xterm 5.5 — see maybeSwap).
 function enableRenderer(term) {
   try {
     const webgl = new (window.WebglAddon.WebglAddon)();
     webgl.onContextLoss(() => webgl.dispose());
     term.loadAddon(webgl);
-    return;
+    return webgl;
   } catch (e) { /* fall through */ }
   try {
-    term.loadAddon(new (window.CanvasAddon.CanvasAddon)());
+    const canvas = new (window.CanvasAddon.CanvasAddon)();
+    term.loadAddon(canvas);
+    return canvas;
   } catch (e2) { /* keep DOM renderer */ }
+  return null;
 }
 
 // Build a fully-wired terminal. openNow=false creates the hidden rebuild
@@ -142,10 +147,11 @@ function makeTerminal(openNow) {
     term.open(container);
     fit.fit();
     // ttyd loads the renderer after open; WebGL failures surface in the try/catch
-    enableRenderer(term);
+    const renderer = enableRenderer(term);
     term.focus(); // cursor focused immediately, no click needed
+    return { term, fit, search, renderer };
   }
-  return { term, fit, search };
+  return { term, fit, search, renderer: null };
 }
 
 // route output to the visible terminal, or hold it while a swap is pending
@@ -164,21 +170,35 @@ function maybeSwap() {
   const s = scratch;
   scratch = null;
   swapPending = false;
-  current.term.dispose(); // removes its element too; disposes addons
-  wtlog('maybeSwap: disposed preview');
-  s.term.open(container);
-  wtlog('maybeSwap: opened scratch');
-  s.term.scrollToBottom();
-  enableRenderer(s.term);
-  s.fit.fit();
-  s.term.focus();
-  current = { term: s.term, fit: s.fit, search: s.search };
-  window.term = s.term; // debugging hook now points at the live terminal
-  replaying = false;
-  const queued = postLive;
-  postLive = [];
-  for (const bytes of queued) current.term.write(bytes);
-  wtlog('maybeSwap: done baseY=' + s.term.buffer.active.baseY);
+  try {
+    // Restore the default (DOM) renderer before tearing the terminal down:
+    // the addon dispose is what swaps the renderer back, and doing it while
+    // the core is alive keeps every addon's dispose clean.
+    if (current.renderer) { try { current.renderer.dispose(); } catch (e) { /* defensive */ } }
+    current.term.dispose(); // removes its element too; disposes addons
+    wtlog('maybeSwap: disposed preview');
+    s.term.open(container);
+    wtlog('maybeSwap: opened scratch');
+    s.term.scrollToBottom();
+    const renderer = enableRenderer(s.term);
+    s.fit.fit();
+    s.term.focus();
+    current = { term: s.term, fit: s.fit, search: s.search, renderer };
+    window.term = s.term; // debugging hook now points at the live terminal
+    replaying = false;
+    const queued = postLive;
+    postLive = [];
+    for (const bytes of queued) current.term.write(bytes);
+    wtlog('maybeSwap: done baseY=' + s.term.buffer.active.baseY);
+  } catch (err) {
+    // never leave the page blank: if the old terminal is gone but the new one
+    // failed to attach, put the old element back so a reload can recover
+    console.error('[webterm] swap failed:', err);
+    window.__wt.lastError = err && (err.stack || err.message);
+    if (container.children.length === 0 && current.term && current.term.element) {
+      container.appendChild(current.term.element);
+    }
+  }
 }
 
 function connect() {
