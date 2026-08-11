@@ -50,7 +50,8 @@ function phase2() {
         phase = 2;
         if (m.replay !== true) { console.error('FAIL: expected replay on re-attach'); process.exit(1); }
         seen.push('init(replay=true)');
-      } else if (m.type === 'replay') { seen.push('replay-marker'); }
+      else if (m.type === 'replay') { seen.push('replay-marker'); }
+      else if (m.type === 'fill') { seen.push('fill-marker'); }
       else if (m.type === 'live') {
         seen.push('live-marker');
         b.send(JSON.stringify({ type: 'input', data: 'exit\n' }));
@@ -61,7 +62,7 @@ function phase2() {
         // drain window: anything queued after the exit frame must show up now
         setTimeout(() => {
           const order = seen.join('>');
-          const ok = order === 'init(replay=true)>replay-marker>live-marker>exit' && replayBytes > 200000 && binAfterExit === 0;
+          const ok = order === 'init(replay=true)>replay-marker>fill-marker>live-marker>exit' && replayBytes > 200000 && binAfterExit === 0;
           console.log('ORDER: ' + order + ' replayBytes=' + replayBytes + ' binAfterExit=' + binAfterExit);
           console.log(ok ? 'PASS: replay before live, live before exit, no binary after exit' : 'FAIL: ordering violation');
           clearTimeout(timeout);

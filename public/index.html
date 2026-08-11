@@ -29,59 +29,42 @@
 // with canvas fallback, Unicode 11 width rules, fontSize 13, and ttyd's exact
 // font stack — font family/size determine cell metrics and box-drawing stroke
 // alignment, so deviating from ttyd's values misaligns borders by a column.
-const term = new Terminal({
-  cursorBlink: true,
-  fontSize: 13,
-  fontFamily: 'Consolas,Liberation Mono,Menlo,Courier,monospace',
-  scrollback: 50000,
-  unicodeVersion: '11',
-  allowProposedApi: true, // Unicode11Addon uses a proposed API (term.unicode)
-  theme: { background: '#1e1e1e' },
-});
-const fit = new (window.FitAddon.FitAddon)();
-term.loadAddon(fit);
-term.loadAddon(new (window.ClipboardAddon.ClipboardAddon)());
-term.loadAddon(new (window.WebLinksAddon.WebLinksAddon)());
-term.loadAddon(new (window.Unicode11Addon.Unicode11Addon)());
-term.loadAddon(new (window.UnicodeGraphemesAddon.UnicodeGraphemesAddon)());
-term.loadAddon(new (window.ImageAddon.ImageAddon)()); // sixel images
-const search = new (window.SearchAddon.SearchAddon)();
-term.loadAddon(search);
-// graphemes supersets unicode 11 width rules (emoji/ZWI correctness);
-// the addon registers its version as '15-graphemes'
-term.unicode.activeVersion = '15-graphemes';
-// Ctrl+Shift+F: find (prompt + next match)
+//
+// Preview-first replay: on refresh the server sends the newest (self-contained)
+// bytes of the session ring first — the visible terminal paints the CURRENT
+// screen immediately, so the user can act while history still streams. Then
+// `fill` carries the full ring in order into a hidden terminal (same emulator,
+// same options), and at `live` that hidden terminal replaces the preview one
+// wholesale: parser state, buffers and all — the exact end state with full
+// scrollback, ready for live bytes.
+const container = document.getElementById('term');
+const KEY = 'webterm.session';
+let sid = localStorage.getItem(KEY) || ''; // persisted session id -> re-attach
+let ws = null;
+let dead = false;   // shell exited — stop reconnecting until reload
+let replaying = false;
+let current = null;    // { term, fit } — the live visible terminal
+let scratch = null;    // { term, fit, search } — hidden terminal rebuilding full history
+let pendingWrites = 0; // fill bytes still being parsed by the hidden terminal
+let fillDone = false;  // live marker seen — swap once the hidden terminal is done
+let swapPending = false; // live seen, swap not yet executed
+let postLive = [];     // frames that arrived after live — flushed post-swap
 let lastQuery = '';
-term.attachCustomKeyEventHandler((e) => {
-  if (e.type !== 'keydown') return true; // handler fires on keyup too
-  if (e.ctrlKey && e.shiftKey && !e.altKey && e.key === 'F') {
-    e.preventDefault();
-    const q = window.prompt('Find:', lastQuery);
-    if (q) {
-      lastQuery = q;
-      search.findNext(q, { incremental: false });
-    }
-    return false;
-  }
-  // Ctrl+= / Ctrl+- font zoom (there is no official zoom addon)
-  if (e.ctrlKey && !e.altKey && !e.metaKey) {
-    if (e.key === '=' || e.key === '+') {
-      e.preventDefault();
-      term.options.fontSize = Math.min(32, term.options.fontSize + 1);
-      fit.fit();
-      return false;
-    }
-    if (e.key === '-' || e.key === '_') {
-      e.preventDefault();
-      term.options.fontSize = Math.max(6, term.options.fontSize - 1);
-      fit.fit();
-      return false;
-    }
-  }
-  return true;
-});
+
+function termOptions() {
+  return {
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: 'Consolas,Liberation Mono,Menlo,Courier,monospace',
+    scrollback: 50000,
+    unicodeVersion: '11',
+    allowProposedApi: true, // Unicode11Addon uses a proposed API (term.unicode)
+    theme: { background: '#1e1e1e' },
+  };
+}
+
 // ttyd's renderer chain: WebGL -> canvas -> dom
-function enableRenderer() {
+function enableRenderer(term) {
   try {
     const webgl = new (window.WebglAddon.WebglAddon)();
     webgl.onContextLoss(() => webgl.dispose());
@@ -92,24 +75,108 @@ function enableRenderer() {
     term.loadAddon(new (window.CanvasAddon.CanvasAddon)());
   } catch (e2) { /* keep DOM renderer */ }
 }
-window.term = term; // handy for debugging, mirrors ttyd
-term.open(document.getElementById('term'));
-fit.fit();
-// ttyd loads the renderer after open; WebGL failures surface in the try/catch
-enableRenderer();
-term.focus(); // cursor focused immediately, no click needed
 
-const KEY = 'webterm.session';
-let sid = localStorage.getItem(KEY) || ''; // persisted session id -> re-attach
-let ws = null;
-let dead = false;   // shell exited — stop reconnecting until reload
-let replaying = false;
+// Build a fully-wired terminal. openNow=false creates the hidden rebuild
+// terminal: no DOM yet, but the same addons (image addon must be loaded
+// BEFORE the fill stream is parsed — sixel cells depend on it).
+function makeTerminal(openNow) {
+  const term = new Terminal(termOptions());
+  const fit = new (window.FitAddon.FitAddon)();
+  term.loadAddon(fit);
+  term.loadAddon(new (window.ClipboardAddon.ClipboardAddon)());
+  term.loadAddon(new (window.WebLinksAddon.WebLinksAddon)());
+  term.loadAddon(new (window.Unicode11Addon.Unicode11Addon)());
+  term.loadAddon(new (window.UnicodeGraphemesAddon.UnicodeGraphemesAddon)());
+  term.loadAddon(new (window.ImageAddon.ImageAddon)()); // sixel images
+  const search = new (window.SearchAddon.SearchAddon)();
+  term.loadAddon(search);
+  // graphemes supersets unicode 11 width rules (emoji/ZWI correctness);
+  // the addon registers its version as '15-graphemes'
+  term.unicode.activeVersion = '15-graphemes';
+  // Ctrl+Shift+F: find (prompt + next match); Ctrl+=/Ctrl+- font zoom
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true; // handler fires on keyup too
+    if (e.ctrlKey && e.shiftKey && !e.altKey && e.key === 'F') {
+      e.preventDefault();
+      const q = window.prompt('Find:', lastQuery);
+      if (q) {
+        lastQuery = q;
+        search.findNext(q, { incremental: false });
+      }
+      return false;
+    }
+    if (e.ctrlKey && !e.altKey && !e.metaKey) {
+      if (e.key === '=' || e.key === '+') {
+        e.preventDefault();
+        term.options.fontSize = Math.min(32, term.options.fontSize + 1);
+        fit.fit();
+        return false;
+      }
+      if (e.key === '-' || e.key === '_') {
+        e.preventDefault();
+        term.options.fontSize = Math.max(6, term.options.fontSize - 1);
+        fit.fit();
+        return false;
+      }
+    }
+    return true;
+  });
+  term.onData((d) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: d })); });
+  term.onResize(({ cols, rows }) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'resize', cols, rows })); });
+  // copy selected text to the OS clipboard as soon as it's selected (ttyd-style)
+  term.onSelectionChange(() => {
+    const sel = term.getSelection();
+    if (!sel) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(sel).catch(() => {});
+    } else {
+      document.execCommand('copy');
+    }
+  });
+  if (openNow) {
+    term.open(container);
+    fit.fit();
+    // ttyd loads the renderer after open; WebGL failures surface in the try/catch
+    enableRenderer(term);
+    term.focus(); // cursor focused immediately, no click needed
+  }
+  return { term, fit, search };
+}
+
+// route output to the visible terminal, or hold it while a swap is pending
+function writeOut(bytes) {
+  if (swapPending) postLive.push(bytes);
+  else current.term.write(bytes);
+}
+
+// Replace the preview terminal with the hidden one that parsed the full ring.
+// The whole Terminal instance swaps (parser state, buffers, modes travel with
+// it) — swapping only the buffer lines would leave the preview parser's state
+// active for subsequent live bytes. Runs at most once per attach.
+function maybeSwap() {
+  if (!scratch || !fillDone || pendingWrites !== 0) return;
+  const s = scratch;
+  scratch = null;
+  swapPending = false;
+  current.term.dispose(); // removes its element too; disposes addons
+  s.term.open(container);
+  s.term.scrollToBottom();
+  enableRenderer(s.term);
+  s.fit.fit();
+  s.term.focus();
+  current = { term: s.term, fit: s.fit, search: s.search };
+  window.term = s.term; // debugging hook now points at the live terminal
+  replaying = false;
+  const queued = postLive;
+  postLive = [];
+  for (const bytes of queued) current.term.write(bytes);
+}
 
 function connect() {
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'hello', id: sid, cols: term.cols, rows: term.rows }));
+    ws.send(JSON.stringify({ type: 'hello', id: sid, cols: current.term.cols, rows: current.term.rows }));
   };
   ws.onmessage = (e) => {
     if (typeof e.data === 'string') {
@@ -117,20 +184,37 @@ function connect() {
       if (m.type === 'init') {
         sid = m.id;
         localStorage.setItem(KEY, sid);
-        term.reset();
+        // a fresh attach: abandon any half-built fill from a previous attempt
+        if (scratch) { scratch.term.dispose(); scratch = null; }
+        pendingWrites = 0; fillDone = false; swapPending = false; postLive = [];
+        current.term.reset();
         replaying = m.replay;
-        term.focus();
+        current.term.focus();
       } else if (m.type === 'replay') {
         replaying = true;
+      } else if (m.type === 'fill') {
+        scratch = makeTerminal(false); // hidden; parses the full ring in order
       } else if (m.type === 'live') {
-        replaying = false;
+        fillDone = true;
+        swapPending = !!scratch;
+        maybeSwap();
+        if (!swapPending) replaying = false;
       } else if (m.type === 'exit') {
         dead = true;
-        term.write('\r\n\x1b[31m[process exited — reload for a new shell]\x1b[0m\r\n');
+        writeOut('\r\n\x1b[31m[process exited — reload for a new shell]\x1b[0m\r\n');
       }
       return;
     }
-    term.write(new Uint8Array(e.data));
+    const bytes = new Uint8Array(e.data);
+    if (scratch && !fillDone) {
+      // fill phase: hidden terminal rebuilds the exact end state
+      pendingWrites++;
+      scratch.term.write(bytes, () => {
+        if (--pendingWrites === 0) maybeSwap();
+      });
+    } else {
+      writeOut(bytes);
+    }
   };
   ws.onclose = () => {
     if (!dead) setTimeout(connect, 1000); // silent reconnect; session survives
@@ -138,19 +222,9 @@ function connect() {
   ws.onerror = () => ws.close();
 }
 
-term.onData((d) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: d })); });
-term.onResize(({ cols, rows }) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'resize', cols, rows })); });
-// copy selected text to the OS clipboard as soon as it's selected (ttyd-style)
-term.onSelectionChange(() => {
-  const sel = term.getSelection();
-  if (!sel) return;
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(sel).catch(() => {});
-  } else {
-    document.execCommand('copy');
-  }
-});
-window.addEventListener('resize', () => fit.fit());
+current = makeTerminal(true);
+window.term = current.term; // handy for debugging, mirrors ttyd
+window.addEventListener('resize', () => current.fit.fit());
 window.addEventListener('beforeunload', () => { if (ws) ws.close(); });
 
 connect();

@@ -69,6 +69,7 @@ function phase2() {
         if (m.replay !== true) { console.error('FAIL: expected replay on re-attach'); process.exit(1); }
         seen.push('init(replay=true)');
       } else if (m.type === 'replay') { seen.push('replay-marker'); }
+      else if (m.type === 'fill') { seen.push('fill-marker'); }
       else if (m.type === 'live') {
         seen.push('live-marker');
         liveStarted = true;
@@ -86,7 +87,7 @@ function phase2() {
   function check() {
     const acc = Buffer.concat(replayChunks).toString('utf8');
     const order = seen.join('>');
-    const ok = order === 'init(replay=true)>replay-marker>live-marker'
+    const ok = order === 'init(replay=true)>replay-marker>fill-marker>live-marker'
       && replayBytes >= 1000000
       && acc.includes('ENOD_GNIR')
       && acc.includes('200000')
