@@ -7,7 +7,7 @@ The architecture mirrors VS Code's terminal: the browser runs a full terminal em
 ## Features
 
 - **Persistent sessions** — the PTY lives in the server process, decoupled from any browser connection. Refresh, close the tab, or lose the network and reconnect: same shell, same history.
-- **Screen restore on re-attach** — recent output is replayed to a fresh client (`replay`/`live` protocol markers), so the visible screen and scrollback come back after a refresh, including full-screen TUIs.
+- **Screen restore on re-attach** — recent output is replayed to a fresh client (`replay`/`fill`/`live` protocol markers), so the visible screen and scrollback come back after a refresh, including full-screen TUIs.
 - **Native copy-paste** — selection and clipboard are browser operations; no tmux in the path, so no nested emulator and no tmux mouse capture.
 - **Zero-loss flow control** — output is queued per client with bounded watermarks (1 MiB high / 256 KiB low); when a client falls behind, the PTY itself is paused (the shell blocks on the pty buffer), then resumed when it catches up. Nothing is dropped (verified with a 1,000,000-line flood through a throttled client).
 - **Clickable links** — URLs render as links: hover shows a pointer cursor, click opens them in a new tab (WebLinksAddon).
@@ -71,9 +71,10 @@ Browser (xterm.js)                      Server (Node)
 └───────────────────────┘               └──────────────────────────────┘
 ```
 
-- **Protocol** — text frames are JSON control (`hello`, `input`, `resize`, `close`, `init`, `replay`, `live`, `exit`); binary frames are raw terminal output. Control frames go through the same per-client queue as output, so `live`/`exit` can never overtake pending bytes.
+- **Protocol** — text frames are JSON control (`hello`, `input`, `resize`, `close`, `init`, `replay`, `fill`, `live`, `exit`); binary frames are raw terminal output. Control frames go through the same per-client queue as output, so `live`/`exit` can never overtake pending bytes.
 - **Flow control** — the server hands output to each client from a bounded queue (1 MiB high watermark); when any client's outstanding bytes exceed the watermark the PTY is paused and a recheck timer runs until it drains (256 KiB low watermark resumes it). `perMessageDeflate` is off and `TCP_NODELAY` on — terminal streams are latency-sensitive.
 - **Replay on re-attach** — the ring (≤ 1 MiB) is split into 256 KiB frames marked *urgent*, so they bypass the pump gate (a single replay frame ≥ the 1 MiB watermark could never pass `outstanding < Q_HIGH` and wedged the queue forever — blank screen on refresh after a long session). Replay bytes still in flight (`replayPending`) are subtracted from each client's outstanding before the watermark check: the catch-up never counts as live backlog, but live output stays bounded at the watermark (the bounded-queue contract is preserved).
+- **Preview-first replay** — on refresh the server finds the shortest byte suffix of the ring that is self-contained (replays candidate suffixes through `@xterm/headless`, the same emulator core as the client, until one reproduces the final screen exactly: text, colors, cursor, normal/alt buffer) and sends `init → replay → [suffix] → fill → [full ring] → live`. The client paints the suffix immediately (~0.3 s) so the current screen is actionable while history streams, parses the full ring into a hidden terminal, then swaps the whole Terminal instance at `live` — parser state, buffers and modes travel with the swap, so subsequent live bytes parse correctly. Output the PTY emits while the boundary is computed is held and flushed after the burst. Old clients ignore the `fill` marker and render the two segments in order (same final state, just slower).
 - **Rendering** — mirrors the ttyd client exactly: WebGL renderer with canvas fallback, Unicode `15-graphemes` width rules (emoji/ZWI aware), fontSize 13, font stack `Consolas,Liberation Mono,Menlo,Courier,monospace`. Deviating from this font/size stack changes cell metrics and misaligns box-drawing borders by a column.
 
 ## Testing
