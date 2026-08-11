@@ -164,12 +164,15 @@ function maybeSwap() {
   const s = scratch;
   scratch = null;
   swapPending = false;
+  replaying = false;
+  const old = current;
+  let committed = false;
   try {
-    // Restore the default (DOM) renderer before tearing the terminal down:
-    // the addon dispose is what swaps the renderer back, and doing it while
-    // the core is alive keeps every addon's dispose clean.
-    if (current.renderer) { try { current.renderer.dispose(); } catch (e) { /* defensive */ } }
-    current.term.dispose(); // removes its element too; disposes addons
+    // Staged, commit-point swap: fully prepare the new terminal (attach,
+    // renderer, fit, focus), then atomically make it `current` — all in this
+    // one synchronous block (no paint in between). Only after the commit is
+    // the old terminal torn down. A failure before the commit leaves the old
+    // terminal live and visible; a failure after can only touch the old one.
     s.term.open(container);
     s.term.scrollToBottom();
     const renderer = enableRenderer(s.term);
@@ -177,16 +180,23 @@ function maybeSwap() {
     s.term.focus();
     current = { term: s.term, fit: s.fit, search: s.search, renderer };
     window.term = s.term; // debugging hook now points at the live terminal
-    replaying = false;
+    committed = true;
+    // cleanup of the old terminal — never touches the committed new one
+    if (old.renderer) { try { old.renderer.dispose(); } catch (e) { /* defensive */ } }
+    old.term.dispose(); // removes its element too; disposes addons
     const queued = postLive;
     postLive = [];
     for (const bytes of queued) current.term.write(bytes);
   } catch (err) {
-    // never leave the page blank: if the old terminal is gone but the new one
-    // failed to attach, put the old element back so a reload can recover
     console.error('[webterm] swap failed:', err);
-    if (container.children.length === 0 && current.term && current.term.element) {
-      container.appendChild(current.term.element);
+    if (!committed) {
+      // preparation failed: the old terminal is still live and visible —
+      // the failed scratch must not leave a second element in the container
+      try { s.term.dispose(); } catch (e) { /* best-effort */ }
+    } else {
+      // commit succeeded, old cleanup failed: the new terminal is live; make
+      // sure a stale old element can't sit above it
+      if (old.term.element) { try { old.term.element.remove(); } catch (e) {} }
     }
   }
 }
