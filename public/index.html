@@ -155,6 +155,18 @@ function writeOut(bytes) {
   else current.term.write(bytes);
 }
 
+// Drain frames that arrived after `live` while a swap was pending. Always
+// reaches a terminal — the committed new one, or on swap failure the still-
+// live old one — so no received frame is ever dropped; each write is guarded
+// individually (a dead terminal logs and moves on rather than stalling).
+function flushPostLive(target) {
+  const queued = postLive;
+  postLive = [];
+  for (const bytes of queued) {
+    try { target.write(bytes); } catch (e) { console.error('[webterm] postLive flush failed:', e); }
+  }
+}
+
 // Replace the preview terminal with the hidden one that parsed the full ring.
 // The whole Terminal instance swaps (parser state, buffers, modes travel with
 // it) — swapping only the buffer lines would leave the preview parser's state
@@ -184,15 +196,16 @@ function maybeSwap() {
     // cleanup of the old terminal — never touches the committed new one
     if (old.renderer) { try { old.renderer.dispose(); } catch (e) { /* defensive */ } }
     old.term.dispose(); // removes its element too; disposes addons
-    const queued = postLive;
-    postLive = [];
-    for (const bytes of queued) current.term.write(bytes);
+    flushPostLive(current.term);
   } catch (err) {
     console.error('[webterm] swap failed:', err);
     if (!committed) {
       // preparation failed: the old terminal is still live and visible —
-      // the failed scratch must not leave a second element in the container
+      // the failed scratch must not leave a second element in the container,
+      // and frames parked while the swap was pending go to the old terminal
+      // (they are newer than the preview, older than anything that follows)
       try { s.term.dispose(); } catch (e) { /* best-effort */ }
+      flushPostLive(old.term);
     } else {
       // commit succeeded, old cleanup failed: the new terminal is live; make
       // sure a stale old element can't sit above it
