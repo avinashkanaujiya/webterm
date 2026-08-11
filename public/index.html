@@ -83,9 +83,11 @@ function enableRenderer(term) {
 
 // Build a fully-wired terminal. openNow=false creates the hidden rebuild
 // terminal: no DOM yet, but the same addons (image addon must be loaded
-// BEFORE the fill stream is parsed — sixel cells depend on it).
-function makeTerminal(openNow) {
-  const term = new Terminal(termOptions());
+// BEFORE the fill stream is parsed — sixel cells depend on it). cols/rows
+// pin the initial size (the hidden terminal parses at the visible terminal's
+// size so the swap needs no reflow).
+function makeTerminal(openNow, cols, rows) {
+  const term = new Terminal({ ...termOptions(), ...(cols && rows ? { cols, rows } : {}) });
   const fit = new (window.FitAddon.FitAddon)();
   term.loadAddon(fit);
   term.loadAddon(new (window.ClipboardAddon.ClipboardAddon)());
@@ -140,9 +142,12 @@ function makeTerminal(openNow) {
   });
   if (openNow) {
     term.open(container);
-    fit.fit();
-    // ttyd loads the renderer after open; WebGL failures surface in the try/catch
+    // renderer BEFORE fit — the fit addon reads the active renderer's cell
+    // dimensions, and the DOM renderer's differ from the WebGL renderer's
+    // (139 vs 150 cols in a 1100px container). The swap uses the same order,
+    // so both terminals land on identical metrics and the swap needs no reflow.
     const renderer = enableRenderer(term);
+    fit.fit();
     term.focus(); // cursor focused immediately, no click needed
     return { term, fit, search, renderer };
   }
@@ -238,7 +243,9 @@ function connect() {
       } else if (m.type === 'replay') {
         replaying = true;
       } else if (m.type === 'fill') {
-        scratch = makeTerminal(false); // hidden; parses the full ring in order
+        // hidden terminal parses the full ring at the visible terminal's
+        // current size — the swap then needs no reflow (no visual change)
+        scratch = makeTerminal(false, current.term.cols, current.term.rows);
       } else if (m.type === 'live') {
         fillDone = true;
         swapPending = !!scratch;
