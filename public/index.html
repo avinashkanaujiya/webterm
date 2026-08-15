@@ -49,6 +49,9 @@ let pendingWrites = 0; // fill bytes still being parsed by the hidden terminal
 let fillDone = false;  // live marker seen — swap once the hidden terminal is done
 let swapPending = false; // live seen, swap not yet executed
 let postLive = [];     // frames that arrived after live — flushed post-swap
+let fillBuf = [];      // ring bytes retained during fill — replay source if the hidden terminal fails
+let fillBytes = 0;     // bytes in fillBuf (bounded; the server ring is 1 MiB)
+const FILL_BUF_MAX = 1.25 * 1024 * 1024; // one ring + slack
 let lastQuery = '';
 
 function termOptions() {
@@ -198,6 +201,7 @@ function maybeSwap() {
     current = { term: s.term, fit: s.fit, search: s.search, renderer };
     window.term = s.term; // debugging hook now points at the live terminal
     committed = true;
+    fillBuf = []; fillBytes = 0; // history now lives in the swapped terminal
     // cleanup of the old terminal — never touches the committed new one
     if (old.renderer) { try { old.renderer.dispose(); } catch (e) { /* defensive */ } }
     old.term.dispose(); // removes its element too; disposes addons
@@ -207,7 +211,11 @@ function maybeSwap() {
       // preparation failed: the old terminal is still live and visible —
       // the failed scratch must not leave a second element in the container
       try { s.term.dispose(); } catch (e) { /* best-effort */ }
-      flushPostLive(old.term); // parked frames go to the old terminal
+      // the ring was already consumed by the failed scratch; rebuild full
+      // history from the retained bytes so scrollback is not stranded on the
+      // preview suffix, then drain any frames parked while the swap was pending
+      fallbackToVisible();
+      flushPostLive(old.term);
     } else {
       // commit succeeded, old cleanup failed: the new terminal is live; make
       // sure a stale old element can't sit above it (its frames are drained
@@ -237,6 +245,7 @@ function connect() {
         // a fresh attach: abandon any half-built fill from a previous attempt
         if (scratch) { scratch.term.dispose(); scratch = null; }
         pendingWrites = 0; fillDone = false; swapPending = false; postLive = [];
+        fillBuf = []; fillBytes = 0;
         current.term.reset();
         replaying = m.replay;
         current.term.focus();
@@ -245,7 +254,13 @@ function connect() {
       } else if (m.type === 'fill') {
         // hidden terminal parses the full ring at the visible terminal's
         // current size — the swap then needs no reflow (no visual change)
-        scratch = makeTerminal(false, current.term.cols, current.term.rows);
+        try {
+          scratch = makeTerminal(false, current.term.cols, current.term.rows);
+        } catch (err) {
+          // hidden terminal failed to build: ring frames below fall through to
+          // the visible terminal (suffix + full ring) — history stays intact
+          console.error('[webterm] fill terminal creation failed:', err);
+        }
       } else if (m.type === 'live') {
         fillDone = true;
         swapPending = !!scratch;
@@ -259,11 +274,22 @@ function connect() {
     }
     const bytes = new Uint8Array(e.data);
     if (scratch && !fillDone) {
-      // fill phase: hidden terminal rebuilds the exact end state
+      // retain the ring while the hidden terminal parses it: if that parse
+      // (or the swap) fails, the retained bytes rebuild full history in the
+      // visible terminal instead of stranding it on the preview suffix
+      if (fillBytes < FILL_BUF_MAX) { fillBuf.push(bytes); fillBytes += bytes.length; }
+      const s = scratch;
       pendingWrites++;
-      scratch.term.write(bytes, () => {
-        if (--pendingWrites === 0) maybeSwap();
-      });
+      try {
+        s.term.write(bytes, () => {
+          // `scratch === s`: a callback firing after fallbackToVisible()
+          // nulled the scratch must not decrement into a stale swap
+          if (scratch === s && --pendingWrites === 0) maybeSwap();
+        });
+      } catch (err) {
+        console.error('[webterm] fill parse failed — rebuilding history in the visible terminal:', err);
+        fallbackToVisible();
+      }
     } else {
       writeOut(bytes);
     }
@@ -272,6 +298,24 @@ function connect() {
     if (!dead) setTimeout(connect, 1000); // silent reconnect; session survives
   };
   ws.onerror = () => ws.close();
+}
+
+// A failed hidden-terminal fill/swap must not strand history: rewind the
+// visible terminal to the ring start, replay the retained ring bytes, and let
+// subsequent frames (ring tail + live output) flow straight in — full
+// scrollback, correct final screen, no parked frames.
+function fallbackToVisible() {
+  if (scratch) { try { scratch.term.dispose(); } catch (e) { /* best-effort */ } scratch = null; }
+  pendingWrites = 0;
+  swapPending = false;
+  fillDone = true; // anything still arriving goes to the visible terminal
+  replaying = false;
+  try { current.term.reset(); } catch (e) { /* best-effort */ }
+  const buf = fillBuf;
+  fillBuf = []; fillBytes = 0;
+  for (const b of buf) {
+    try { current.term.write(b); } catch (e) { /* best-effort */ }
+  }
 }
 
 current = makeTerminal(true);
